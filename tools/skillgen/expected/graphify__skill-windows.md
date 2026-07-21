@@ -67,7 +67,7 @@ Only when the path is one or more `https://github.com/...` URLs, or several loca
 ```powershell
 # Detect Python with graphify — uv/pipx-aware (fixes #831)
 New-Item -ItemType Directory -Force -Path graphify-out | Out-Null
-$GRAPHIFY_PYTHON = $null
+$GRAPHIFY_PYTHON = $env:GRAPHIFY_PYTHON
 
 function Find-GraphifyPython {
     # 1. uv tool install — 'uv tool dir' is authoritative, respects UV_TOOL_DIR automatically

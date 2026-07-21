@@ -26,15 +26,17 @@
       inputs.uv2nix.follows = "uv2nix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+
+    py-harbor = {
+      url = "git+https://codeberg.org/caniko/py-harbor.git?ref=trunk";
+      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.pyproject-nix.follows = "pyproject-nix";
+      inputs.uv2nix.follows = "uv2nix";
+      inputs.pyproject-build-systems.follows = "pyproject-build-systems";
+    };
   };
 
-  outputs = inputs @ {
-    flake-parts,
-    pyproject-nix,
-    uv2nix,
-    pyproject-build-systems,
-    ...
-  }:
+  outputs = inputs @ {flake-parts, ...}:
     flake-parts.lib.mkFlake {inherit inputs;} {
       systems = ["x86_64-linux" "aarch64-linux" "aarch64-darwin"];
 
@@ -55,11 +57,9 @@
         pyproject = lib.importTOML ./pyproject.toml;
         projectMeta = pyproject.project;
 
-        workspace = uv2nix.lib.workspace.loadWorkspace {workspaceRoot = ./.;};
+        py = inputs.py-harbor.lib;
 
-        overlay = workspace.mkPyprojectOverlay {
-          sourcePreference = "wheel";
-        };
+        workspace = py.loadUvWorkspace {workspaceRoot = ./.;};
 
         editableOverlay = workspace.mkEditablePyprojectOverlay {
           root = "$REPO_ROOT";
@@ -67,98 +67,70 @@
 
         python = pkgs.python312;
 
-        baseSet =
-          (pkgs.callPackage pyproject-nix.build.packages {
-            inherit python;
-          })
-          .overrideScope
-          (
-            lib.composeManyExtensions [
-              pyproject-build-systems.overlays.wheel
-              overlay
-            ]
-          );
+        pythonSet = py.mkUvPythonSet {
+          inherit pkgs python;
+          workspaceRoot = ./.;
+          sourcePreference = "wheel";
+          dependencies = workspace.deps.all;
+          pyprojectOverrides = final: prev: {
+            numba = prev.numba.overrideAttrs (old: {
+              buildInputs = (old.buildInputs or []) ++ [pkgs.tbb];
+            });
 
-        pythonSet = baseSet.overrideScope (final: prev: {
-          # numba manylinux wheel dlopens libtbb.so at runtime; expose it so
-          # autoPatchelfHook (from pyproject-build-systems' wheel overlay) can
-          # resolve it on the rpath.
-          numba = prev.numba.overrideAttrs (old: {
-            buildInputs = (old.buildInputs or []) ++ [pkgs.tbb];
-          });
+            nuitka = prev.nuitka.overrideAttrs (old: {
+              nativeBuildInputs =
+                (old.nativeBuildInputs or [])
+                ++ final.resolveBuildSystem {setuptools = [];};
+            });
 
-          # nuitka's sdist doesn't declare setuptools as a build dep.
-          nuitka = prev.nuitka.overrideAttrs (old: {
-            nativeBuildInputs =
-              (old.nativeBuildInputs or [])
-              ++ final.resolveBuildSystem {setuptools = [];};
-          });
+            jieba = prev.jieba.overrideAttrs (old: {
+              nativeBuildInputs =
+                (old.nativeBuildInputs or [])
+                ++ final.resolveBuildSystem {setuptools = [];};
+            });
 
-          # jieba's sdist doesn't declare setuptools as a build dep.
-          jieba = prev.jieba.overrideAttrs (old: {
-            nativeBuildInputs =
-              (old.nativeBuildInputs or [])
-              ++ final.resolveBuildSystem {setuptools = [];};
-          });
+            tree-sitter-dm = prev.tree-sitter-dm.overrideAttrs (old: {
+              nativeBuildInputs =
+                (old.nativeBuildInputs or [])
+                ++ final.resolveBuildSystem {setuptools = [];};
+            });
 
-          # tree-sitter-dm's sdist doesn't declare setuptools as a build dep.
-          tree-sitter-dm = prev.tree-sitter-dm.overrideAttrs (old: {
-            nativeBuildInputs =
-              (old.nativeBuildInputs or [])
-              ++ final.resolveBuildSystem {setuptools = [];};
-          });
-
-          # Expose tests via passthru.tests so they can be wired into flake
-          # checks (mirrors the uv2nix testing pattern).
-          graphifyy = prev.graphifyy.overrideAttrs (old: {
-            passthru =
-              (old.passthru or {})
-              // {
-                tests = let
-                  # Virtualenv containing graphify plus the dev dependency
-                  # group (which carries pytest and friends).
-                  testVenv = final.mkVirtualEnv "graphify-test-env" (workspace.deps.default
+            graphifyy = prev.graphifyy.overrideAttrs (old: {
+              passthru =
+                (old.passthru or {})
+                // {
+                  tests = let
+                    testVenv = final.mkVirtualEnv "graphify-test-env" (workspace.deps.default
+                      // {
+                        graphifyy = ["dev" "ollama" "acp"];
+                      });
+                  in
+                    (old.passthru.tests or {})
                     // {
-                      # The retry-cap tests exercise the OpenAI-compatible Ollama
-                      # path, so include that optional extra in the test-only
-                      # environment without pulling every runtime extra.
-                      graphifyy = ["dev" "ollama" "acp"];
-                    });
-                in
-                  (old.passthru.tests or {})
-                  // {
-                    pytest = pkgs.stdenv.mkDerivation {
-                      name = "${final.graphifyy.name}-pytest";
-                      # Test the repository tree rather than the wheel source:
-                      # skillgen's fixtures and extraction-spec fragments are
-                      # intentionally repository assets, not package payload.
-                      src = ./.;
-                      nativeBuildInputs = [testVenv pkgs.git];
-                      dontConfigure = true;
+                      pytest = pkgs.stdenv.mkDerivation {
+                        name = "${final.graphifyy.name}-pytest";
+                        src = ./.;
+                        nativeBuildInputs = [testVenv pkgs.git];
+                        dontConfigure = true;
 
-                      buildPhase = ''
-                        runHook preBuild
-                        # The Nix build sandbox sets HOME=/homeless-shelter
-                        # which is unwritable; several tests (e.g. the Gemini
-                        # install ones) call helpers that resolve paths via
-                        # Path.home() when not project-scoped. Point HOME at a
-                        # writable temp dir so those tests pass under
-                        # `nix flake check`.
-                        export HOME=''${PWD}/home
-                        pytest
-                        runHook postBuild
-                      '';
+                        buildPhase = ''
+                          runHook preBuild
+                          export HOME=''${PWD}/home
+                          pytest
+                          runHook postBuild
+                        '';
 
-                      installPhase = ''
-                        runHook preInstall
-                        touch $out
-                        runHook postInstall
-                      '';
+                        installPhase = ''
+                          runHook preInstall
+                          touch $out
+                          runHook postInstall
+                        '';
+                      };
                     };
-                  };
-              };
-          });
-        });
+                };
+            });
+          };
+        };
 
         editablePythonSet = pythonSet.overrideScope editableOverlay;
         virtualenv = editablePythonSet.mkVirtualEnv "graphify-dev-env" workspace.deps.all;
@@ -177,34 +149,20 @@
             graphifyy = ["all"];
           });
 
-        # Wrap a virtualenv so consumers receive stable public entry points while
-        # the environment remains available for smoke checks and composition.
+        # Export stable entry points while exposing the environment contract
+        # used by downstream shells and services.
         mkGraphifyPackage = {
           environment,
           suffix ? "",
         }:
-          pkgs.stdenv.mkDerivation {
-            pname = projectMeta.name + suffix;
-            version = projectMeta.version;
-
-            dontUnpack = true;
-            dontBuild = true;
-            dontConfigure = true;
-
-            nativeBuildInputs = [pkgs.makeWrapper];
-
-            installPhase = ''
-              mkdir -p $out/bin
-              makeWrapper ${environment}/bin/graphify $out/bin/graphify
-              if [ -x ${environment}/bin/graphify-mcp ]; then
-                makeWrapper ${environment}/bin/graphify-mcp $out/bin/graphify-mcp
-              fi
-            '';
-
+          py.mkPythonApplicationPackage {
+            inherit pkgs environment;
+            name = "${projectMeta.name}${suffix}-${projectMeta.version}";
+            scripts = ["graphify" "graphify-mcp"];
+            includeEnvironment = false;
             passthru = {
               graphifyEnv = environment;
             };
-
             meta = {
               description = projectMeta.description;
               homepage = projectMeta.urls.Homepage;
@@ -347,6 +305,7 @@
             UV_PYTHON_DOWNLOADS = "never";
             UV_PROJECT_ENVIRONMENT = virtualenv.outPath;
             VIRTUAL_ENV = virtualenv.outPath;
+            GRAPHIFY_PYTHON = "${virtualenv}/bin/python";
           };
 
           shellHook = ''
@@ -367,7 +326,8 @@
           full-package = pkgs.runCommand "graphify-full-package-check" {} ''
             test -x ${graphifyFullPackage}/bin/graphify
             test -x ${graphifyFullPackage}/bin/graphify-mcp
-            ${graphifyFullEnv}/bin/python -c 'import acp, anthropic, boto3, falkordb, mcp, neo4j, openai, psycopg'
+            test -x ${graphifyFullPackage.passthru.pythonInterpreter}
+            ${graphifyFullPackage.passthru.pythonInterpreter} -c 'import acp, anthropic, boto3, falkordb, mcp, neo4j, openai, psycopg'
             touch $out
           '';
           nixos-module = pkgs.runCommand "graphify-nixos-module-check" {} ''

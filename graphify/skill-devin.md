@@ -71,8 +71,9 @@ Follow these steps in order. Do not skip steps.
 
 ```bash
 # Detect the correct Python interpreter (handles uv tool, pipx, venv, system installs)
-PYTHON=""
+PYTHON="${GRAPHIFY_PYTHON:-}"
 GRAPHIFY_BIN=$(which graphify 2>/dev/null)
+if [ -n "$PYTHON" ] && ! "$PYTHON" -c "import graphify" 2>/dev/null; then PYTHON=""; fi
 # 1. uv tool installs — most reliable on modern Mac/Linux
 if [ -z "$PYTHON" ] && command -v uv >/dev/null 2>&1; then
     _UV_PY=$(uv tool run --from graphifyy python -c "import sys; print(sys.executable)" 2>/dev/null)

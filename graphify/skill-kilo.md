@@ -66,8 +66,11 @@ Only when the path is one or more `https://github.com/...` URLs, or several loca
 
 ```bash
 # Detect the correct Python interpreter (handles uv tool, pipx, venv, system installs)
-PYTHON=""
+PYTHON="${GRAPHIFY_PYTHON:-}"
 GRAPHIFY_BIN=$(which graphify 2>/dev/null)
+# A Nix/Home-Manager installation exports the exact environment interpreter;
+# validate it before probing mutable user-tool locations.
+if [ -n "$PYTHON" ] && ! "$PYTHON" -c "import graphify" 2>/dev/null; then PYTHON=""; fi
 # 1. uv tool installs — most reliable on modern Mac/Linux
 if [ -z "$PYTHON" ] && command -v uv >/dev/null 2>&1; then
     _UV_PY=$(uv tool run --from graphifyy python -c "import sys; print(sys.executable)" 2>/dev/null)
