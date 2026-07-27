@@ -914,6 +914,33 @@ def test_gemini_install_idempotent(tmp_path):
     assert md.read_text().count("## graphify") == 1
 
 
+def test_gemini_install_replaces_skillnet_references_symlink(tmp_path):
+    """Progressive installation must not call rmtree on Skillnet's view link."""
+    from graphify.__main__ import gemini_install
+
+    skill_dir = tmp_path / ".gemini" / "skills" / "graphify"
+    skill_dir.mkdir(parents=True)
+    canonical_refs = tmp_path / "canonical-references"
+    canonical_refs.mkdir()
+    (canonical_refs / "keep-me.md").write_text("canonical\n")
+    (skill_dir / "references").symlink_to(canonical_refs, target_is_directory=True)
+    staged_refs = skill_dir / "references.tmp"
+    staged_refs.mkdir()
+    staged_file = staged_refs / "stale.md"
+    staged_file.write_text("stale\n")
+    staged_file.chmod(0o444)
+    staged_refs.chmod(0o555)
+
+    gemini_install(tmp_path, project=True)
+
+    installed_refs = skill_dir / "references"
+    assert not staged_refs.exists()
+    assert installed_refs.is_dir()
+    assert not installed_refs.is_symlink()
+    assert (installed_refs / "extraction-spec.md").exists()
+    assert (canonical_refs / "keep-me.md").exists()
+
+
 def test_gemini_install_merges_existing_gemini_md(tmp_path):
     from graphify.__main__ import gemini_install
 

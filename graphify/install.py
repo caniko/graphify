@@ -17,6 +17,7 @@ import os
 import platform
 import re
 import shutil
+import stat
 import sys
 from pathlib import Path
 
@@ -150,6 +151,28 @@ def _packaged_skill_refs_dir(platform_name: str) -> Path | None:
     if not bundle_dir.is_dir():
         return None
     return bundle_dir / "references"
+
+
+def _remove_directory_or_link(path: Path) -> None:
+    """Remove an installed directory without following a materialized link.
+
+    Skill managers may expose a packaged ``references/`` directory as a
+    symlink.  ``shutil.rmtree`` deliberately rejects symlinks, and following
+    one here would risk deleting the canonical skill source.  Unlink links
+    (including dangling links); recursively remove only real directories.
+    """
+    if path.is_symlink() or path.is_file():
+        path.unlink()
+    elif path.exists():
+        def retry_writable(func, target, _exc_info):
+            target_path = Path(target)
+            os.chmod(target_path, stat.S_IRWXU)
+            os.chmod(target_path.parent, stat.S_IRWXU)
+            func(target)
+
+        shutil.rmtree(path, onerror=retry_writable)
+
+
 def _install_skill_references(skill_dst: Path, refs_src: Path) -> None:
     """Atomically install a packaged references/ sidecar next to SKILL.md.
 
@@ -160,16 +183,16 @@ def _install_skill_references(skill_dst: Path, refs_src: Path) -> None:
     """
     refs_dst = skill_dst.parent / "references"
     refs_staged = skill_dst.parent / "references.tmp"
-    if refs_staged.exists():
-        shutil.rmtree(refs_staged)
+    if refs_staged.exists() or refs_staged.is_symlink():
+        _remove_directory_or_link(refs_staged)
     try:
         shutil.copytree(refs_src, refs_staged)
-        if refs_dst.exists():
-            shutil.rmtree(refs_dst)
+        if refs_dst.exists() or refs_dst.is_symlink():
+            _remove_directory_or_link(refs_dst)
         os.replace(refs_staged, refs_dst)
     except Exception:
-        if refs_staged.exists():
-            shutil.rmtree(refs_staged, ignore_errors=True)
+        if refs_staged.exists() or refs_staged.is_symlink():
+            _remove_directory_or_link(refs_staged)
         raise
 def _copy_skill_file(platform_name: str, *, project: bool = False, project_dir: Path | None = None) -> Path:
     """Copy a packaged skill file and write its version stamp.
@@ -210,8 +233,8 @@ def _copy_skill_file(platform_name: str, *, project: bool = False, project_dir: 
     else:
         # Monolith (or progressive-with-no-refs): clear any orphan references/.
         orphan_refs = skill_dst.parent / "references"
-        if orphan_refs.exists():
-            shutil.rmtree(orphan_refs)
+        if orphan_refs.exists() or orphan_refs.is_symlink():
+            _remove_directory_or_link(orphan_refs)
 
     # SKILL.md last (crash-safety), via an atomic temp + rename.
     tmp_dst = skill_dst.with_suffix(skill_dst.suffix + ".tmp")
@@ -241,8 +264,8 @@ def _remove_skill_file(platform_name: str, *, project: bool = False, project_dir
         version_file.unlink()
         removed = True
     refs_dir = skill_dst.parent / "references"
-    if refs_dir.exists():
-        shutil.rmtree(refs_dir)
+    if refs_dir.exists() or refs_dir.is_symlink():
+        _remove_directory_or_link(refs_dir)
         removed = True
     for d in (skill_dst.parent, skill_dst.parent.parent, skill_dst.parent.parent.parent):
         try:
@@ -785,8 +808,8 @@ def vscode_uninstall(project_dir: Path | None = None) -> None:
     if version_file.exists():
         version_file.unlink()
     refs_dir = skill_dst.parent / "references"
-    if refs_dir.exists():
-        shutil.rmtree(refs_dir)
+    if refs_dir.exists() or refs_dir.is_symlink():
+        _remove_directory_or_link(refs_dir)
     for d in (
         skill_dst.parent,
         skill_dst.parent.parent,
